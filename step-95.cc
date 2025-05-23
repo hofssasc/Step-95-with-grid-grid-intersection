@@ -1031,28 +1031,41 @@ namespace Step95
 
   public:
 
+    GridGridIntersectionQuadratureGenerator()
+      : mapping(1)
+      , quadrature_order(0)
+    {};
+
     GridGridIntersectionQuadratureGenerator(
-      const parallel::distributed::Triangulation<dim> &tria_fitted_in,
-      const parallel::distributed::Triangulation<dim> &tria_unfitted_in,
       const MappingQ<dim> mapping_in,
       unsigned int quadrature_order_in);
 
-    void setup_cell_data();
+    void reinit(
+      const MappingQ<dim> mapping_in,
+      unsigned int quadrature_order_in);
 
-    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature(const typename Triangulation< dim >::cell_iterator &cell);
+    void clear();
 
-    std::vector<Quadrature<dim>> get_inside_quadrature(const typename Triangulation< dim >::cell_iterator &cell);
+    void setup_fitted_surface_mesh(const parallel::distributed::Triangulation<dim> &tria_fitted_in);
 
-    NonMatching::LocationToLevelSet location_to_geometry(const typename Triangulation< dim >::cell_iterator &cell);
+    void setup_cell_data(const parallel::distributed::Triangulation<dim> &tria_unfitted_in);
+
+    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature(unsigned int cell_index);
+    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature(
+      const typename Triangulation< dim >::cell_iterator &cell);
+
+    Quadrature<dim> get_inside_quadrature(unsigned int cell_index);
+    Quadrature<dim> get_inside_quadrature(
+      const typename Triangulation< dim >::cell_iterator &cell);
+
+    NonMatching::LocationToLevelSet location_to_geometry(unsigned int cell_index);
+    NonMatching::LocationToLevelSet location_to_geometry(
+      const typename Triangulation< dim >::cell_iterator &cell);
 
   private:
 
-    void setup_fitted_surface_mesh();
-
     void append_cell_quadratures(const typename Triangulation< dim >::cell_iterator &cell);
 
-    const parallel::distributed::Triangulation<dim> &tria_fitted;
-    const parallel::distributed::Triangulation<dim> &tria_unfitted;
     const MappingQ<dim> mapping;
     unsigned int quadrature_order;
 
@@ -1065,22 +1078,33 @@ namespace Step95
 
   template<int dim>
   GridGridIntersectionQuadratureGenerator<dim>::GridGridIntersectionQuadratureGenerator(
-    const parallel::distributed::Triangulation<dim> &tria_fitted_in,
-    const parallel::distributed::Triangulation<dim> &tria_unfitted_in,
     const MappingQ<dim> mapping_in,
     unsigned int quadrature_order_in)
-      : tria_fitted(tria_fitted_in)
-      , tria_unfitted(tria_unfitted_in)
-      , mapping(mapping_in)
+      : mapping(mapping_in)
       , quadrature_order(quadrature_order_in)
+  {}
+
+  template<int dim>
+  void GridGridIntersectionQuadratureGenerator<dim>::reinit(
+      const MappingQ<dim> mapping_in,
+      unsigned int quadrature_order_in)
   {
-    quad_vec_cells.reserve(tria_unfitted.n_active_cells());
-    quad_vec_surface.reserve(tria_unfitted.n_active_cells());
-    location_to_geometry_vec.reserve(tria_unfitted.n_active_cells());
+    mapping = mapping_in;
+    quadrature_order = quadrature_order_in;
   }
 
   template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::setup_fitted_surface_mesh()
+  void GridGridIntersectionQuadratureGenerator<dim>::clear()
+  {
+    quad_vec_cells.clear();
+    quad_vec_surface.clear();
+    location_to_geometry_vec.clear();
+    fitted_surface_mesh.clear();
+  }
+
+  template<int dim>
+  void GridGridIntersectionQuadratureGenerator<dim>::setup_fitted_surface_mesh(
+    const parallel::distributed::Triangulation<dim> &tria_fitted)
   {
     fitted_surface_mesh.clear();
     CGALWrappers::dealii_tria_to_cgal_surface_mesh<CGALPoint>(
@@ -1089,7 +1113,8 @@ namespace Step95
   }
 
   template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::append_cell_quadratures(const typename Triangulation< dim >::cell_iterator &cell)
+  void GridGridIntersectionQuadratureGenerator<dim>::append_cell_quadratures(
+    const typename Triangulation< dim >::cell_iterator &cell)
   {
     CGAL::Surface_mesh<CGALPoint> fitted_surface_mesh_copy(fitted_surface_mesh);
     CGAL::Surface_mesh<CGALPoint> surface_cell;
@@ -1212,32 +1237,68 @@ namespace Step95
 
 
   template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::setup_cell_data()
+  void GridGridIntersectionQuadratureGenerator<dim>::setup_cell_data(
+    const parallel::distributed::Triangulation<dim> &tria_unfitted)
   {
-    setup_fitted_surface_mesh();
+    quad_vec_cells.clear();
+    quad_vec_cells.reserve(tria_unfitted.n_active_cells());
+    quad_vec_surface.clear();
+    quad_vec_surface.reserve(tria_unfitted.n_active_cells());
+    location_to_geometry_vec.clear();
+    location_to_geometry_vec.reserve(tria_unfitted.n_active_cells());
 
-    for(const auto &cell : tria_fitted)
+    for(const auto &cell : tria_unfitted.active_cell_iterators())
     {
       append_cell_quadratures(cell);
     }
   }
 
   template<int dim>
-  NonMatching::ImmersedSurfaceQuadrature<dim> GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature(const typename Triangulation< dim >::cell_iterator &cell)
+  NonMatching::ImmersedSurfaceQuadrature<dim> 
+  GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature(
+    unsigned int cell_index)
   {
-    return quad_vec_surface[0];
+    return quad_vec_surface[cell_index];
   }
 
   template<int dim>
-  std::vector<Quadrature<dim>> GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature(const typename Triangulation< dim >::cell_iterator &cell)
+  NonMatching::ImmersedSurfaceQuadrature<dim> 
+  GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature(
+    const typename Triangulation< dim >::cell_iterator &cell)
   {
-    return quad_vec_cells[0];
+    return quad_vec_surface[cell->active_cell_index()];
   }
 
   template<int dim>
-  NonMatching::LocationToLevelSet GridGridIntersectionQuadratureGenerator<dim>::location_to_geometry(const typename Triangulation< dim >::cell_iterator &cell)
+  Quadrature<dim>
+  GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature(
+    unsigned int cell_index)
   {
-    return location_to_geometry_vec[0];
+    return quad_vec_cells[cell_index];
+  }
+
+  template<int dim>
+  Quadrature<dim>
+  GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature(
+    const typename Triangulation< dim >::cell_iterator &cell)
+  {
+    return quad_vec_cells[cell->active_cell_index()];
+  }
+
+  template<int dim>
+  NonMatching::LocationToLevelSet 
+  GridGridIntersectionQuadratureGenerator<dim>::location_to_geometry(
+    unsigned int cell_index)
+  {
+    return location_to_geometry_vec[cell_index];
+  }
+
+  template<int dim>
+  NonMatching::LocationToLevelSet 
+  GridGridIntersectionQuadratureGenerator<dim>::location_to_geometry(
+    const typename Triangulation< dim >::cell_iterator &cell)
+  {
+    return location_to_geometry_vec[cell->active_cell_index()];
   }
 
 
@@ -1268,20 +1329,20 @@ namespace Step95
   private:
     void make_grid();
 
-    void setup_fitted_dealii_grid();
+    void setup_fitted_dealii_grid(); //New
 
     void setup_discrete_level_set();
 
-    void setup_fitted_surface_mesh();
+    void setup_fitted_surface_mesh(); // obsolete if new class works
 
     NonMatching::LocationToLevelSet location_to_fitted_geometry(
-      const typename Triangulation< dim >::cell_iterator &cell);
+      const typename Triangulation< dim >::cell_iterator &cell); // obsolete if new class works
 
     Quadrature<dim> generate_inside_quadrature(
-      const typename Triangulation< dim >::cell_iterator &cell);
+      const typename Triangulation< dim >::cell_iterator &cell); // obsolete if new class works
 
     NonMatching::ImmersedSurfaceQuadrature<dim> generate_surface_quadrature(
-      const typename Triangulation< dim >::cell_iterator &cell);
+      const typename Triangulation< dim >::cell_iterator &cell); // obsolete if new class works
 
     void distribute_dofs();
 
@@ -1300,7 +1361,7 @@ namespace Step95
     const Functions::ConstantFunction<dim> rhs_function;
 
     parallel::distributed::Triangulation<dim> triangulation;
-    parallel::distributed::Triangulation<dim> triangulation_fitted;
+    parallel::distributed::Triangulation<dim> triangulation_fitted; //New
 
     ConditionalOStream pcout;
 
@@ -1320,13 +1381,15 @@ namespace Step95
     DoFHandler<dim> dof_handler;
     VectorType      solution;
 
-    DoFHandler<dim> dof_handler_fitted;
+    DoFHandler<dim> dof_handler_fitted; //New
 
     NonMatching::MeshClassifier<dim> mesh_classifier;
 
     VectorType rhs;
 
     const MappingQ<dim> mapping;
+
+    GridGridIntersectionQuadratureGenerator<dim> ggi_quadrature_generator; //New
 
     // NonMatching::MappingInfo objects
     std::unique_ptr<NonMatching::MappingInfo<dim, dim, VectorizedArrayType>>
@@ -1341,7 +1404,7 @@ namespace Step95
 
     bool is_dg;
     bool is_cgal;
-    CGAL::Surface_mesh<CGALPoint> fitted_surface_mesh; 
+    CGAL::Surface_mesh<CGALPoint> fitted_surface_mesh; // obsolete if new class works
   };
 
 
@@ -1360,6 +1423,7 @@ namespace Step95
     , dof_handler_fitted(triangulation_fitted)
     , mesh_classifier(level_set_dof_handler, level_set)
     , mapping(1)
+    , ggi_quadrature_generator(mapping, fe_degree+1)
     , is_dg(false)
     , is_cgal(true)
   {}
@@ -1622,7 +1686,8 @@ namespace Step95
                               IteratorFilters::LocallyOwnedCell())
       {
         const NonMatching::LocationToLevelSet cell_location =
-         location_to_fitted_geometry(cell);
+          ggi_quadrature_generator.location_to_geometry(cell);
+         //location_to_fitted_geometry(cell);
          //mesh_classifier.location_to_level_set(cell);
 
         if (cell_location == NonMatching::LocationToLevelSet::inside)
@@ -1681,8 +1746,11 @@ namespace Step95
     {
       is_intersected_cell =
         [&](const TriaIterator<CellAccessor<dim, dim>> &cell) {
-          return location_to_fitted_geometry(cell) ==
-                 NonMatching::LocationToLevelSet::intersected;
+          // return location_to_fitted_geometry(cell) ==
+          //        NonMatching::LocationToLevelSet::intersected;
+          return ggi_quadrature_generator.location_to_geometry(cell)
+              == NonMatching::LocationToLevelSet::intersected;
+
         };
     }else{
       is_intersected_cell =
@@ -1740,10 +1808,14 @@ namespace Step95
 
           if (is_intersected_cell(cell))
             {
+              // quad_vec_cells_cgal.push_back(
+              //   generate_inside_quadrature(cell));
+              // quad_vec_surface_cgal.push_back(
+              //   generate_surface_quadrature(cell));
               quad_vec_cells_cgal.push_back(
-                generate_inside_quadrature(cell));
+                ggi_quadrature_generator.get_inside_quadrature(cell));
               quad_vec_surface_cgal.push_back(
-                generate_surface_quadrature(cell));
+                ggi_quadrature_generator.get_surface_quadrature(cell));
               
               for (auto weight : quad_vec_cells_cgal.back().get_weights())
               {
@@ -1772,8 +1844,8 @@ namespace Step95
     
     //Debug CGAL version
     const FE_Q<dim, dim> finite_element_unfited(fe_degree);
-    typename NonMatching::MappingInfo<dim,dim, VectorizedArrayType >::AdditionalData additional_data (true);
-    typename NonMatching::MappingInfo<dim,dim,  VectorizedArrayType>::AdditionalData additional_data_surface (true);
+    typename NonMatching::MappingInfo<dim,dim, VectorizedArrayType >::AdditionalData additional_data (false);
+    typename NonMatching::MappingInfo<dim,dim,  VectorizedArrayType>::AdditionalData additional_data_surface (false);
     
     NonMatching::MappingInfo<dim, dim, VectorizedArrayType> mapping_info_cell_cgal(
       mapping, update_values | update_gradients | update_quadrature_points  | update_JxW_values, additional_data);
@@ -1782,7 +1854,7 @@ namespace Step95
 
     NonMatching::MappingInfo<dim, dim, VectorizedArrayType> mapping_info_surface_cgal(
       mapping, update_values |  update_gradients | update_quadrature_points | update_JxW_values  |
-        update_normal_vectors);
+        update_normal_vectors, additional_data_surface);
     mapping_info_surface_cgal.reinit_surface(vector_accessors, quad_vec_surface_cgal);
     FEPointEvaluation<1, dim, dim, VectorizedArray<Number>> point_evaluation_surface(mapping_info_surface_cgal, finite_element_unfited);
 
@@ -1832,13 +1904,13 @@ namespace Step95
     mapping_info_cell = std::make_unique<
       NonMatching::MappingInfo<dim, dim, VectorizedArray<Number>>>(
       mapping, update_values | update_gradients | update_JxW_values);
-    mapping_info_cell->reinit_cells(vector_accessors, quad_vec_cells/*_cgal*/);
+    mapping_info_cell->reinit_cells(vector_accessors, quad_vec_cells_cgal);
 
     mapping_info_surface = std::make_unique<
       NonMatching::MappingInfo<dim, dim, VectorizedArray<Number>>>(
       mapping, update_values | update_gradients | update_JxW_values  |
         update_normal_vectors);
-    mapping_info_surface->reinit_surface(vector_accessors, quad_vec_surface /*_cgal*/);
+    mapping_info_surface->reinit_surface(vector_accessors, quad_vec_surface_cgal);
 
 
     
@@ -2196,19 +2268,24 @@ namespace Step95
     const unsigned int n_refinements = 0;
 
     make_grid();
-    setup_fitted_dealii_grid();
-    setup_fitted_surface_mesh();
+    setup_fitted_dealii_grid(); // New
+    setup_fitted_surface_mesh(); // obsolete when new class works
+    ggi_quadrature_generator.setup_fitted_surface_mesh(triangulation_fitted); // New
     for (unsigned int cycle = 0; cycle <= n_refinements; cycle++)
       {
         pcout << "Refinement cycle " << cycle << std::endl;
         triangulation.refine_global(1);
 
         //triangulation_fitted.refine_global(1);
-        //setup_fitted_surface_mesh();
+        //ggi_quadrature_generator.setup_fitted_surface_mesh(triangulation_fitted);
 
-        setup_discrete_level_set();
-        pcout << "Classifying cells" << std::endl;
-        mesh_classifier.reclassify();
+        pcout << "Classify and generate quadratures for ggi" << std::endl; //New
+        ggi_quadrature_generator.setup_cell_data(triangulation); //New
+        
+        setup_discrete_level_set(); // level set
+        pcout << "Classifying cells" << std::endl; //level set
+        mesh_classifier.reclassify(); //level set
+
         distribute_dofs();
         setup_matrix_free();
         setup_mapping_data();
