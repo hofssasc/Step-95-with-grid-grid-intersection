@@ -77,6 +77,7 @@
 #  include <deal.II/cgal/surface_mesh.h>
 #  include <deal.II/cgal/utilities.h>
 #  include <CGAL/Polygon_mesh_processing/clip.h>
+#  include <CGAL/Side_of_triangle_mesh.h>
 
 #  include <CGAL/Surface_mesh.h>
 #  include <CGAL/IO/output_to_vtu.h>
@@ -1046,17 +1047,14 @@ namespace Step95
 
     void clear();
 
-    void setup_fitted_surface_mesh(const parallel::distributed::Triangulation<dim> &tria_fitted_in);
+    void reclassify(const parallel::distributed::Triangulation<dim> &tria_unfitted_in,
+                    const parallel::distributed::Triangulation<dim> &tria_fitted_in);
 
-    void setup_cell_data(const parallel::distributed::Triangulation<dim> &tria_unfitted_in);
+    void generate(const typename Triangulation< dim >::cell_iterator &cell);
 
-    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature(unsigned int cell_index);
-    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature(
-      const typename Triangulation< dim >::cell_iterator &cell);
+    NonMatching::ImmersedSurfaceQuadrature<dim> get_surface_quadrature();
 
-    Quadrature<dim> get_inside_quadrature(unsigned int cell_index);
-    Quadrature<dim> get_inside_quadrature(
-      const typename Triangulation< dim >::cell_iterator &cell);
+    Quadrature<dim> get_inside_quadrature();
 
     NonMatching::LocationToLevelSet location_to_geometry(unsigned int cell_index);
     NonMatching::LocationToLevelSet location_to_geometry(
@@ -1064,15 +1062,13 @@ namespace Step95
 
   private:
 
-    void append_cell_quadratures(const typename Triangulation< dim >::cell_iterator &cell);
-
     const MappingQ<dim> mapping;
     unsigned int quadrature_order;
 
     CGAL::Surface_mesh<CGALPoint> fitted_surface_mesh;
 
-    std::vector<Quadrature<dim>> quad_vec_cells;
-    std::vector<NonMatching::ImmersedSurfaceQuadrature<dim>> quad_vec_surface;
+    Quadrature<dim> quad_cells;
+    NonMatching::ImmersedSurfaceQuadrature<dim> quad_surface;
     std::vector<NonMatching::LocationToLevelSet> location_to_geometry_vec;
   };
 
@@ -1093,27 +1089,57 @@ namespace Step95
     quadrature_order = quadrature_order_in;
   }
 
+
   template<int dim>
   void GridGridIntersectionQuadratureGenerator<dim>::clear()
   {
-    quad_vec_cells.clear();
-    quad_vec_surface.clear();
+    quad_cells.clear();
+    quad_surface.clear();
     location_to_geometry_vec.clear();
     fitted_surface_mesh.clear();
   }
 
   template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::setup_fitted_surface_mesh(
-    const parallel::distributed::Triangulation<dim> &tria_fitted)
+  void GridGridIntersectionQuadratureGenerator<dim>::reclassify(
+      const parallel::distributed::Triangulation<dim> &tria_unfitted
+    , const parallel::distributed::Triangulation<dim> &tria_fitted)
   {
     fitted_surface_mesh.clear();
     CGALWrappers::dealii_tria_to_cgal_surface_mesh<CGALPoint>(
       tria_fitted, fitted_surface_mesh);
     CGAL::Polygon_mesh_processing::triangulate_faces(fitted_surface_mesh);
+    location_to_geometry_vec.clear();
+    location_to_geometry_vec.reserve(tria_unfitted.n_active_cells());
+
+    CGAL::Side_of_triangle_mesh<CGAL::Surface_mesh<CGALPoint>, K> 
+      inside_test(fitted_surface_mesh);
+
+    for(const auto &cell : tria_unfitted.active_cell_iterators())
+    {
+      unsigned int inside_count = 0;
+      for(size_t i = 0; i < cell->n_vertices(); i++)
+      {
+        auto result = inside_test(CGALWrappers::dealii_point_to_cgal_point<CGALPoint,dim>(cell->vertex(i)));
+        inside_count += (result == CGAL::ON_BOUNDED_SIDE);
+      }
+
+      if(inside_count == 0)
+      {
+        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::outside);
+      }
+      else if(inside_count == cell->n_vertices())
+      {
+        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::inside);
+      }
+      else
+      {
+        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::intersected);
+      }   
+    }
   }
 
   template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::append_cell_quadratures(
+  void GridGridIntersectionQuadratureGenerator<dim>::generate(
     const typename Triangulation< dim >::cell_iterator &cell)
   {
     CGAL::Surface_mesh<CGALPoint> fitted_surface_mesh_copy(fitted_surface_mesh);
@@ -1121,24 +1147,22 @@ namespace Step95
     CGALWrappers::dealii_cell_to_cgal_surface_mesh(cell, mapping, surface_cell);
     CGAL::Polygon_mesh_processing::triangulate_faces(surface_cell);
 
-    bool do_intersect = CGAL::Polygon_mesh_processing::do_intersect(surface_cell, fitted_surface_mesh_copy);
-
     {// not needed for surface calculation
       CGAL::Surface_mesh<CGALPoint> out_surface;
       CGALWrappers::compute_boolean_operation(surface_cell, fitted_surface_mesh_copy,
           CGALWrappers::BooleanOperation::compute_intersection, out_surface);
       
       //maybe refinement not needed didnt make much so far
-      std::vector<CGAL::Surface_mesh<CGALPoint>::Face_index> faces_to_refine;
-      for(const auto &face : out_surface.faces())
-      {
-        if(CGAL::Polygon_mesh_processing::face_aspect_ratio(face,out_surface) > 4.)
-        {
-          faces_to_refine.push_back(face);
-        }
-      }
-      CGAL::Polygon_mesh_processing::refine(out_surface, faces_to_refine,
-        CGAL::Emptyset_iterator(),CGAL::Emptyset_iterator());
+      // std::vector<CGAL::Surface_mesh<CGALPoint>::Face_index> faces_to_refine;
+      // for(const auto &face : out_surface.faces())
+      // {
+      //   if(CGAL::Polygon_mesh_processing::face_aspect_ratio(face,out_surface) > 4.)
+      //   {
+      //     faces_to_refine.push_back(face);
+      //   }
+      // }
+      // CGAL::Polygon_mesh_processing::refine(out_surface, faces_to_refine,
+      //   CGAL::Emptyset_iterator(),CGAL::Emptyset_iterator());
 
       //Fill triangulation with vertices from surface mesh
       CGALTriangulation tria;
@@ -1158,47 +1182,29 @@ namespace Step95
           mapping.transform_points_real_to_unit_cell(cell, simplex, unit_simplex);
           vec_of_simplices.push_back(unit_simplex);
         }
-
-      // imediately return if empty union
-      if(vec_of_simplices.empty())
-      {
-        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::outside);
-        quad_vec_cells.emplace_back();
-        quad_vec_surface.emplace_back();
-        return;
-      }else if(!do_intersect)
-      {
-        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::inside);
-        quad_vec_surface.emplace_back();
-        quad_vec_cells.emplace_back();
-        return;
-      }else
-      {
-        location_to_geometry_vec.push_back(NonMatching::LocationToLevelSet::intersected);
-        quad_vec_cells.push_back(QGaussSimplex<dim>(quadrature_order).mapped_quadrature(vec_of_simplices));
-      }
+      quad_cells = QGaussSimplex<dim>(quadrature_order).mapped_quadrature(vec_of_simplices);
     }
-    //test if this works !!!! maybe need to use new copys of both
+    //seems to work but keep in ming maybe need to use new copys
     bool manifold = CGAL::Polygon_mesh_processing::clip(fitted_surface_mesh_copy, surface_cell);
     Assert(manifold, ExcMessage("The clipped surface mesh is not a manifold"));
 
     CGAL::Polygon_mesh_processing::remove_degenerate_faces(fitted_surface_mesh_copy);
 
-    std::vector<CGAL::Surface_mesh<CGALPoint>::Face_index> faces_to_refine;
-    for(const auto &face : fitted_surface_mesh_copy.faces())
-    {
-      if(CGAL::Polygon_mesh_processing::face_aspect_ratio(face,fitted_surface_mesh_copy) > 4.)
-      {
-        faces_to_refine.push_back(face);
-      }
-    }
-    CGAL::Polygon_mesh_processing::refine(fitted_surface_mesh_copy, faces_to_refine,
-      CGAL::Emptyset_iterator(),CGAL::Emptyset_iterator());
+    // std::vector<CGAL::Surface_mesh<CGALPoint>::Face_index> faces_to_refine;
+    // for(const auto &face : fitted_surface_mesh_copy.faces())
+    // {
+    //   if(CGAL::Polygon_mesh_processing::face_aspect_ratio(face,fitted_surface_mesh_copy) > 4.)
+    //   {
+    //     faces_to_refine.push_back(face);
+    //   }
+    // }
+    // CGAL::Polygon_mesh_processing::refine(fitted_surface_mesh_copy, faces_to_refine,
+    //   CGAL::Emptyset_iterator(),CGAL::Emptyset_iterator());
 
     std::vector<Point<dim>> quadrature_points;
     std::vector<double> quadrature_weights;
     std::vector<Tensor<1,dim>> normals;
-    double ref_area = std::pow(cell->minimum_vertex_distance() , 2) * 0.00001;
+    double ref_area = std::pow(cell->minimum_vertex_distance() , 2) * 0.0000001;
     for(const auto &face : fitted_surface_mesh_copy.faces())
     {
       if(CGAL::abs(CGAL::Polygon_mesh_processing::face_area(face,fitted_surface_mesh_copy)) < ref_area)
@@ -1220,69 +1226,32 @@ namespace Step95
       auto weights = quadrature.get_weights();
       quadrature_points.insert(quadrature_points.end(), points.begin(), points.end());
       quadrature_weights.insert(quadrature_weights.end(), weights.begin(), weights.end());
-
-      auto normal = CGAL::Polygon_mesh_processing::compute_face_normal(face, fitted_surface_mesh_copy);
       
-      normals.insert(normals.end(), quadrature.size(), 
-        Tensor<1,dim>({ CGAL::to_double(normal.x()),
-                        CGAL::to_double(normal.y()),
-                        CGAL::to_double(normal.z())}) );
-
+      const Tensor<1,3> v1 = simplex[2] - simplex[1];
+      const Tensor<1,3> v2 = simplex[0] - simplex[1];
+      Tensor<1,3> normal = cross_product_3d(v1, v2);
+      normal /= normal.norm();
+      normals.insert(normals.end(), quadrature.size(), normal);
     }
-    quad_vec_surface.emplace_back(quadrature_points, quadrature_weights, normals);
+    quad_surface = NonMatching::ImmersedSurfaceQuadrature<dim>(quadrature_points, quadrature_weights, normals);
 
-    //This should not be possible
-    Assert(!quadrature_weights.empty(), ExcInternalError("Cannot occure"));
-  }
-
-
-  template<int dim>
-  void GridGridIntersectionQuadratureGenerator<dim>::setup_cell_data(
-    const parallel::distributed::Triangulation<dim> &tria_unfitted)
-  {
-    quad_vec_cells.clear();
-    quad_vec_cells.reserve(tria_unfitted.n_active_cells());
-    quad_vec_surface.clear();
-    quad_vec_surface.reserve(tria_unfitted.n_active_cells());
-    location_to_geometry_vec.clear();
-    location_to_geometry_vec.reserve(tria_unfitted.n_active_cells());
-
-    for(const auto &cell : tria_unfitted.active_cell_iterators())
-    {
-      append_cell_quadratures(cell);
-    }
+    if(quadrature_weights.empty())
+      std::cout << "small intersection ignored this should not happen to much" << std::endl;
   }
 
   template<int dim>
   NonMatching::ImmersedSurfaceQuadrature<dim> 
-  GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature(
-    unsigned int cell_index)
+  GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature()
   {
-    return quad_vec_surface[cell_index];
+    return quad_surface;
   }
 
-  template<int dim>
-  NonMatching::ImmersedSurfaceQuadrature<dim> 
-  GridGridIntersectionQuadratureGenerator<dim>::get_surface_quadrature(
-    const typename Triangulation< dim >::cell_iterator &cell)
-  {
-    return quad_vec_surface[cell->active_cell_index()];
-  }
 
   template<int dim>
   Quadrature<dim>
-  GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature(
-    unsigned int cell_index)
+  GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature()
   {
-    return quad_vec_cells[cell_index];
-  }
-
-  template<int dim>
-  Quadrature<dim>
-  GridGridIntersectionQuadratureGenerator<dim>::get_inside_quadrature(
-    const typename Triangulation< dim >::cell_iterator &cell)
-  {
-    return quad_vec_cells[cell->active_cell_index()];
+    return quad_cells;
   }
 
   template<int dim>
@@ -1441,7 +1410,7 @@ namespace Step95
 
     triangulation.clear();
     GridGenerator::hyper_cube(triangulation, -1.21, 1.21);
-    triangulation.refine_global(3);
+    triangulation.refine_global(2);
   }
 
   template<int dim>
@@ -1812,26 +1781,27 @@ namespace Step95
               //   generate_inside_quadrature(cell));
               // quad_vec_surface_cgal.push_back(
               //   generate_surface_quadrature(cell));
+              ggi_quadrature_generator.generate(cell);
               quad_vec_cells_cgal.push_back(
-                ggi_quadrature_generator.get_inside_quadrature(cell));
+                ggi_quadrature_generator.get_inside_quadrature());
               quad_vec_surface_cgal.push_back(
-                ggi_quadrature_generator.get_surface_quadrature(cell));
+                ggi_quadrature_generator.get_surface_quadrature());
               
-              for (auto weight : quad_vec_cells_cgal.back().get_weights())
-              {
-                AssertIsFinite(weight);
-              }
-              for (auto weight : quad_vec_surface_cgal.back().get_weights())
-              {
-                AssertIsFinite(weight);
-              }
+              // for (auto weight : quad_vec_cells_cgal.back().get_weights())
+              // {
+              //   AssertIsFinite(weight);
+              // }
+              // for (auto weight : quad_vec_surface_cgal.back().get_weights())
+              // {
+              //   AssertIsFinite(weight);
+              // }
 
-              quadrature_generator.generate(cell);
+              // quadrature_generator.generate(cell);
 
-              quad_vec_cells.push_back(
-                quadrature_generator.get_inside_quadrature());
-              quad_vec_surface.push_back(
-                quadrature_generator.get_surface_quadrature());
+              // quad_vec_cells.push_back(
+              //   quadrature_generator.get_inside_quadrature());
+              // quad_vec_surface.push_back(
+              //   quadrature_generator.get_surface_quadrature());
             }
           else
             {
@@ -1842,63 +1812,6 @@ namespace Step95
             }
         }
     
-    //Debug CGAL version
-    const FE_Q<dim, dim> finite_element_unfited(fe_degree);
-    typename NonMatching::MappingInfo<dim,dim, VectorizedArrayType >::AdditionalData additional_data (false);
-    typename NonMatching::MappingInfo<dim,dim,  VectorizedArrayType>::AdditionalData additional_data_surface (false);
-    
-    NonMatching::MappingInfo<dim, dim, VectorizedArrayType> mapping_info_cell_cgal(
-      mapping, update_values | update_gradients | update_quadrature_points  | update_JxW_values, additional_data);
-    mapping_info_cell_cgal.reinit_cells(vector_accessors, quad_vec_cells_cgal);
-    FEPointEvaluation<1, dim, dim, VectorizedArray<Number>> point_evaluation(mapping_info_cell_cgal, finite_element_unfited);
-
-    NonMatching::MappingInfo<dim, dim, VectorizedArrayType> mapping_info_surface_cgal(
-      mapping, update_values |  update_gradients | update_quadrature_points | update_JxW_values  |
-        update_normal_vectors, additional_data_surface);
-    mapping_info_surface_cgal.reinit_surface(vector_accessors, quad_vec_surface_cgal);
-    FEPointEvaluation<1, dim, dim, VectorizedArray<Number>> point_evaluation_surface(mapping_info_surface_cgal, finite_element_unfited);
-
-    double total_volume = 0.0;
-    for(size_t i = 0; i < vector_accessors.size(); i++)
-    {
-      point_evaluation.reinit(i);
-      //point_evaluation.evaluate(EvaluationFlags::values);
-
-      double volume = 0.0;
-      for(auto q : point_evaluation.quadrature_point_indices())
-      {
-        // std::cout << "Volume - Global : " << point_evaluation.quadrature_point(q) << "Unit interval: " << point_evaluation.unit_point(q) <<
-        // " with weight: " << point_evaluation.JxW(q) << std::endl;
-        for (unsigned int i = 0; i < VectorizedArray<Number>::size(); ++i)
-          volume += point_evaluation.JxW(q)[i];
-      }
-      total_volume += volume; 
-      //std::cout << "Volume " << i << " : " << volume << std::endl;
-    }
-
-    double total_area = 0.0;
-    for(size_t i = 0; i < vector_accessors.size(); i++)
-    {
-      point_evaluation_surface.reinit(i);
-
-      double area = 0.0;
-      for(auto q : point_evaluation_surface.quadrature_point_indices())
-      {
-        // std::cout << "Surface - Global : " << point_evaluation_surface.quadrature_point(q) << "Unit interval: " << point_evaluation_surface.unit_point(q) <<
-        // " with weight: " << point_evaluation_surface.JxW(q) << std::endl;
-        for (unsigned int i = 0; i < VectorizedArray<Number>::size(); ++i)
-          area += point_evaluation_surface.JxW(q)[i];
-      }
-      total_area += area; 
-      //std::cout << "Area " << i << " : " << area << std::endl;
-    }
-
-    std::cout << "Total volume cut: " << total_volume << std::endl;
-    std::cout << "Total area: " << total_area << std::endl;
-
-    //Debug CGAL version
-
-
     // then we initialize the NonMatching::MappingInfo objects to precompute
     // mapping information for cells and surface quadrature points.
     mapping_info_cell = std::make_unique<
@@ -1911,12 +1824,6 @@ namespace Step95
       mapping, update_values | update_gradients | update_JxW_values  |
         update_normal_vectors);
     mapping_info_surface->reinit_surface(vector_accessors, quad_vec_surface_cgal);
-
-
-    
-
-
-
  
 
     // In case of DG, we also have to compute mapping data for cut faces, so we
@@ -2265,12 +2172,11 @@ namespace Step95
 
     dealii::Timer      timer;
     ConvergenceTable   convergence_table;
-    const unsigned int n_refinements = 0;
+    const unsigned int n_refinements = 3;
 
     make_grid();
-    setup_fitted_dealii_grid(); // New
-    setup_fitted_surface_mesh(); // obsolete when new class works
-    ggi_quadrature_generator.setup_fitted_surface_mesh(triangulation_fitted); // New
+    setup_fitted_dealii_grid();
+    //setup_fitted_surface_mesh(); // obsolete when new class works
     for (unsigned int cycle = 0; cycle <= n_refinements; cycle++)
       {
         pcout << "Refinement cycle " << cycle << std::endl;
@@ -2279,11 +2185,12 @@ namespace Step95
         //triangulation_fitted.refine_global(1);
         //ggi_quadrature_generator.setup_fitted_surface_mesh(triangulation_fitted);
 
-        pcout << "Classify and generate quadratures for ggi" << std::endl; //New
-        ggi_quadrature_generator.setup_cell_data(triangulation); //New
+        pcout << "Classifying cells (for ggi)" << std::endl; //New
+        //maybe also a setup function here for case fitted is not refined
+        ggi_quadrature_generator.reclassify(triangulation, triangulation_fitted); //New
         
         setup_discrete_level_set(); // level set
-        pcout << "Classifying cells" << std::endl; //level set
+        pcout << "Classifying cells (for level set)" << std::endl; //level set
         mesh_classifier.reclassify(); //level set
 
         distribute_dofs();
