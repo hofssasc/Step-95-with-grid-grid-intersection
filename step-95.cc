@@ -74,36 +74,8 @@
 #include <deal.II/matrix_free/fe_point_evaluation.h>
 
 #ifdef DEAL_II_WITH_CGAL
-#  include <deal.II/cgal/surface_mesh.h>
-#  include <deal.II/cgal/utilities.h>
-
-//3D
-#  include <CGAL/Polygon_mesh_processing/clip.h>
-#  include <CGAL/Side_of_triangle_mesh.h>
-
-#  include <CGAL/Surface_mesh.h>
-
-//mabye can be deleted 
-#  include <CGAL/Polygon_mesh_processing/repair.h>
-
-//2D
-#  include "polygon_2.h" //includes <CGAL/Polygon_2.h> already and also Point_2
 #  include "grid_grid_intersection_quadrature_generator.h"
-
-#  include <CGAL/Polygon_with_holes_2.h>
-#  include <CGAL/Boolean_set_operations_2.h>
-#  include <CGAL/Iso_rectangle_2.h>
-#  include <CGAL/intersections.h>
-#  include <CGAL/Delaunay_triangulation_2.h>
-
-//output
-#  include <CGAL/IO/output_to_vtu.h>
-#  include <CGAL/boost/graph/IO/polygon_mesh_io.h>
-#  include <CGAL/IO/VTK.h>
 #endif
-
-//remove as soon as better solution for dealii_tria_to_cgal_polygon
-#include <deal.II/grid/manifold_lib.h>
 
 
 
